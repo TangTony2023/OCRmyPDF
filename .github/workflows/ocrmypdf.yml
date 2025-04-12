@@ -1,0 +1,74 @@
+name: OCRmyPDF Processing
+
+on:
+  push:
+    paths:
+      - 'input/**/*.pdf'  # 监控input目录下的PDF文件变化
+  workflow_dispatch:      # 允许手动触发
+    inputs:
+      input-file:
+        description: 'Path to input PDF file (relative to repo root)'
+        required: true
+      languages:
+        description: 'Languages for OCR (e.g. eng+chi_sim)'
+        required: false
+        default: 'eng'
+
+jobs:
+  process-pdf:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ocrmypdf/ocrmypdf:v16.3.3  # 使用官方容器镜像
+      options: --user root  # 需要root权限来安装额外语言包
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Install additional language packs (optional)
+      if: ${{ inputs.languages && contains(inputs.languages, 'chi') }}
+      run: |
+        apt-get update
+        apt-get install -y tesseract-ocr-chi-sim tesseract-ocr-chi-tra
+    
+    - name: Create output directory
+      run: mkdir -p output
+    
+    - name: Process PDF with OCRmyPDF
+      id: ocr
+      run: |
+        INPUT_PATH="${{ github.event.inputs.input-file || 'input/document.pdf' }}"
+        OUTPUT_PATH="output/$(basename "${INPUT_PATH}")"
+        
+        ocrmypdf \
+          "$INPUT_PATH" \
+          "$OUTPUT_PATH" \
+          --language "${{ github.event.inputs.languages || 'eng' }}" \
+          --output-type pdfa \
+          --deskew \
+          --clean \
+          --progress-bar \
+          --optimize 3
+        
+        echo "output_file=$OUTPUT_PATH" >> $GITHUB_OUTPUT
+        echo "input_file=$INPUT_PATH" >> $GITHUB_OUTPUT
+    
+    - name: Upload processed PDF as artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: processed-pdf
+        path: ${{ steps.ocr.outputs.output_file }}
+    
+    - name: Compare file sizes
+      run: |
+        echo "Original file size: $(du -h ${{ steps.ocr.outputs.input_file }} | cut -f1)"
+        echo "Processed file size: $(du -h ${{ steps.ocr.outputs.output_file }} | cut -f1)"
+    
+    - name: Create GitHub release (optional)
+      if: success()
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{ steps.ocr.outputs.output_file }}
+        body: "OCR processed PDF - ${{ steps.ocr.outputs.output_file }}"
